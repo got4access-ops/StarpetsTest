@@ -8,6 +8,17 @@ const BUDGET_MS = 50000;
 
 export const maxDuration = 60;
 
+// StarPets drops requests that don't look like they came from their own site.
+const HEADERS = {
+  "Content-Type": "application/json",
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  Origin: "https://starpets.gg",
+  Referer: "https://starpets.gg/",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+};
+
 const normalise = (value) => String(value).toLowerCase().replace(/[\s-]+/g, "_");
 
 const variantOf = ({ pumping, flyable, rideable }) =>
@@ -18,7 +29,7 @@ const variantOf = ({ pumping, flyable, rideable }) =>
 async function fetchPage(page) {
   const response = await fetch(SOURCE, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: HEADERS,
     body: JSON.stringify({
       filter: { types: [{ type: "pet" }] },
       page,
@@ -53,7 +64,17 @@ export default async function handler(_request, response) {
   let truncated = false;
 
   try {
-    const first = await fetchPage(1);
+    // The first page can be refused on a cold connection, so it gets a few goes.
+    let first;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        first = await fetchPage(1);
+        break;
+      } catch (error) {
+        if (attempt === 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+      }
+    }
     absorb(first.items, prices);
 
     const perPage = first.items?.length || PAGE_SIZE;
@@ -81,7 +102,11 @@ export default async function handler(_request, response) {
     );
   } catch (error) {
     response.setHeader("Cache-Control", "public, s-maxage=60");
-    return response.status(502).json({ error: String(error.message || error), prices: {} });
+    return response.status(502).json({
+      error: String(error.message || error),
+      cause: String(error.cause?.message || error.cause || ""),
+      prices: {},
+    });
   }
 
   response.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=86400");
